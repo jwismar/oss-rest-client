@@ -1,0 +1,21 @@
+<?xml version='1.0'?>
+<configuration>
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <!-- encoders are assigned the type
+         ch.qos.logback.classic.encoder.PatternLayoutEncoder by default -->
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [common-util-test:%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <root level="ALL">
+    <appender-ref ref="STDOUT" />
+  </root>
+  
+  <logger name="org.reflections.Reflections" level="WARN"/>
+  <logger name="org.apache.commons" level="INFO"/>
+  <logger name="org.mortbay.log" level="OFF"/>
+  <logger name="javax.ws.rs.client" level="ALL"/>
+
+</configuration>
