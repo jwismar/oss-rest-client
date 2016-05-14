@@ -142,8 +142,7 @@ public class BaseResourceClient<T> {
      * create empty list with session
      */
     public <U> U createList(final Long sessionId, final GenericType<U> superType) {
-        return getSessionRequest(sessionId, MediaType.APPLICATION_JSON)
-                .post(Entity.json(null), superType);
+        return getSessionRequest(sessionId, MediaType.APPLICATION_JSON).post(Entity.json(null), superType);
     }
 
     /**
@@ -563,7 +562,15 @@ public class BaseResourceClient<T> {
         return service.path(uri).request(MediaType.APPLICATION_JSON).get(superType);
     }
 
-    // read list with session
+    /**
+     * read list with session
+     * 
+     * <li><b> Note:</b> If you get an error like the following, it probably means that you're using a different
+     * definition of GenericType<>. This method wants javax.ws.rs.core.GenericType.</li>
+     * 
+     * {@code The method readList(Long, GenericType<U>) in the type BaseResourceClient<Collection<Something>> 
+     * is not applicable for the arguments (Long, GenericType<Collection<Something>>) }
+     */
     public <U> U readList(final Long sessionId, final GenericType<U> genericType) {
         return service.path(uri).request(MediaType.APPLICATION_JSON).cookie("X-SessionId", sessionId.toString())
                 .get(genericType);
