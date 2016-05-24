@@ -1,5 +1,7 @@
 package com.clearcapital.oss.rest;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.Collection;
@@ -7,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import javax.ws.rs.ProcessingException;
+import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation.Builder;
 import javax.ws.rs.client.WebTarget;
@@ -14,7 +18,11 @@ import javax.ws.rs.core.GenericType;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.UriBuilder;
+
+import org.glassfish.jersey.media.multipart.Boundary;
+import org.glassfish.jersey.media.multipart.FormDataMultiPart;
 
 /**
  * A REST client for a single resource where the server follows these conventions:
@@ -136,6 +144,13 @@ public class BaseResourceClient<T> {
     public T create(final String key, final T entity, final Long sessionId) {
         return service.path(uri).path(key).request(MediaType.APPLICATION_JSON)
                 .cookie("X-SessionId", sessionId.toString()).post(Entity.json(entity), clazz);
+    }
+
+    // create from non-canonical, serialized object, with session
+    public T create(final String instance, final MediaType mediaType, final Long sessionId) throws IOException {
+        InputStream is = new ByteArrayInputStream(instance.getBytes("UTF-8"));
+        return service.path(uri).request(MediaType.APPLICATION_JSON).cookie("X-SessionId", sessionId.toString())
+                .post(Entity.entity(is, mediaType), clazz);
     }
 
     /**
@@ -301,6 +316,25 @@ public class BaseResourceClient<T> {
     }
 
     /**
+     * Obtain a BaseResourceClient<> for the specified {@code id}, {@code updateId} and {@code relativePath}.
+     * 
+     * <p>
+     * For example, if {@code this.uri} is something like {@code /v1/entities}, then the result's uri will be
+     * {@code /v1/entities/_id_/_relativePath_} and the result will work with items of type {@code genericType}.
+     * </p>
+     */
+    public <U> BaseResourceClient<U> getChildClient(final GenericType<U> genericType, final Long id,
+            final Long updateId, final String relativePath) {
+        UriBuilder builder = UriBuilder.fromUri(uri);
+        builder.path("" + id);
+        builder.path("versions");
+        builder.path("" + updateId);
+        builder.path(relativePath);
+        URI subUri = builder.build();
+        return new BaseResourceClient<U>(service, genericType, subUri.toString());
+    }
+
+    /**
      * Obtain a BaseResourceClient<> for the specified {@code key} and {@code relativePath}.
      * 
      * <p>
@@ -460,7 +494,22 @@ public class BaseResourceClient<T> {
      * </pre>
      */
     public T read(final Long id, final Long sessionId) {
-        return service.path(uri).path(id.toString()).request(MediaType.APPLICATION_JSON)
+        return read(id, sessionId, MediaType.APPLICATION_JSON_TYPE);
+    }
+
+    /**
+     * Get with given {@code id} and {@code sessionId}, accepting media type {@code acceptedMediaType}
+     * 
+     * <pre>
+     * {@code
+     * GET _uri_/_id_
+     * Accept: _acceptedMediaType_
+     * Cookie: X-SessionId=_sessionId_
+     * }
+     * </pre>
+     */
+    public T read(final Long id, final Long sessionId, MediaType acceptedMediaType) {
+        return service.path(uri).path(id.toString()).request(acceptedMediaType)
                 .cookie("X-SessionId", sessionId.toString()).get(clazz);
     }
 
@@ -715,5 +764,97 @@ public class BaseResourceClient<T> {
             }
         }
         return result;
+    }
+
+    // Create - multi-part form data
+    public T createMultiPart(final FormDataMultiPart formData, final Long sessionId) {
+        return service.path(uri).request(Boundary.addBoundary(MediaType.MULTIPART_FORM_DATA_TYPE))
+                .header("Cookie", "X-SessionId=" + sessionId.toString())
+                .post(Entity.entity(formData, MediaType.MULTIPART_FORM_DATA_TYPE), clazz);
+    }
+
+    //
+    // Update - multi-part form data
+    public T updateMultiPart(final Long id, final FormDataMultiPart formData, final Long sessionId) {
+        return service.path(uri).path(id.toString()).request(Boundary.addBoundary(MediaType.MULTIPART_FORM_DATA_TYPE))
+                .header("Cookie", "X-SessionId=" + sessionId.toString())
+                .put(Entity.entity(formData, MediaType.MULTIPART_FORM_DATA_TYPE), clazz);
+    }
+
+    public URI getJobLink(final Long sessionId) throws Exception {
+        return getJobLink(null, sessionId);
+    }
+
+    public URI getJobLink(final MultivaluedMap<String, String> queryParams, final Long sessionId)
+            throws ProcessingException {
+
+        // Can't use WebResource object. Need lower level control to handle 202 status and Location response header.
+        UriBuilder uriBuilder = service.getUriBuilder().path(getUri());
+
+        if (queryParams != null) {
+            for (Map.Entry<String, List<String>> e : queryParams.entrySet()) {
+                for (String value : e.getValue()) {
+                    uriBuilder.queryParam(e.getKey(), value);
+                }
+            }
+        }
+
+        URI fullyQualifiedPath = uriBuilder.build();
+
+        // Should expect a 202 (Accepted) response.
+        WebTarget webTarget = ClientBuilder.newClient().target(fullyQualifiedPath);
+        Response response = webTarget.request().cookie("X-SessionId", sessionId.toString()).get();
+        if (response.getStatus() < 300) {
+            if (response.getStatus() == Status.ACCEPTED.getStatusCode()) { // job was created
+                return response.getLocation();
+            } else {
+                // succeeded but returned wrong status? Don't know how that happened, but apparently it's not an
+                // error.
+                return null;
+            }
+        } else {
+            throw new ProcessingException(response.getStatusInfo().getReasonPhrase());
+        }
+
+    }
+
+    // create list with session, and request entity
+    public MultiStatusResult addList(final Long sessionId, final Object requestEntity) throws ProcessingException {
+        // Can't use WebResource object. Need lower level control to handle 207 status.
+        URI fullyQualifiedPath = service.getUriBuilder().path(getUri()).build();
+        WebTarget webTarget = ClientBuilder.newClient().target(fullyQualifiedPath);
+        Response response = webTarget.request(MediaType.APPLICATION_JSON).cookie("X-SessionId", sessionId.toString())
+                .post(Entity.json(requestEntity));
+        if (response.getStatus() < 300) { // succeeded
+            if (response.getStatus() == 207) { // multi-status
+                return response.readEntity(MultiStatusResult.class);
+            } else {
+                // succeeded completely. Not multi-status.
+                return null;
+            }
+        } else {
+            // Treat it the same way WebResource would have.
+            throw new ProcessingException(response.getStatusInfo().getReasonPhrase());
+        }
+    }
+
+    // delete list with session, and path identifier
+    public MultiStatusResult subtractList(final Long sessionId, final String pathId) throws ProcessingException {
+        // Can't use WebResource object. Need lower level control to handle 207 status.
+        URI fullyQualifiedPath = service.getUriBuilder().path(getUri()).path(pathId).build();
+        WebTarget webTarget = ClientBuilder.newClient().target(fullyQualifiedPath);
+        Response response = webTarget.request(MediaType.APPLICATION_JSON).cookie("X-SessionId", sessionId.toString())
+                .delete();
+        if (response.getStatus() < 300) { // succeeded
+            if (response.getStatus() == 207) { // multi-status
+                return response.readEntity(MultiStatusResult.class);
+            } else {
+                // succeeded completely. Not multi-status.
+                return null;
+            }
+        } else {
+            // Treat it the same way WebResource would have.
+            throw new ProcessingException(response.getStatusInfo().getReasonPhrase());
+        }
     }
 }
